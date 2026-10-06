@@ -3,6 +3,7 @@ Docling-based document extraction processor.
 """
 
 import os
+import warnings
 from typing import Optional
 
 from content_core.config import ContentCoreConfig
@@ -44,11 +45,13 @@ VISION_MODEL_ENV = "CCORE_DOCLING_VISION_MODEL"
 VISION_PROMPT_ENV = "CCORE_DOCLING_VISION_PROMPT"
 VISION_MAX_TOKENS_ENV = "CCORE_DOCLING_VISION_MAX_TOKENS"
 VISION_TIMEOUT_ENV = "CCORE_DOCLING_VISION_TIMEOUT"
+VISION_TOKEN_PARAM_ENV = "CCORE_DOCLING_VISION_TOKEN_PARAM"
 
 # Docling's own defaults for the picture description stage, mirrored here so
 # that enabling the API path without further overrides behaves identically
 # except for the endpoint.
 _DEFAULT_VISION_PROMPT = "Describe the image in three sentences. Be concise and accurate."
+_DEFAULT_VISION_MAX_TOKENS = 400
 _DOCLING_DEFAULT_TIMEOUT = 20
 
 # Supported MIME types for Docling extraction
@@ -69,6 +72,34 @@ DOCLING_SUPPORTED = {
 }
 
 
+def _parse_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        warnings.warn(
+            f"{name}={raw!r} is not an integer, falling back to {default}",
+            stacklevel=2,
+        )
+        return default
+
+
+def _parse_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        warnings.warn(
+            f"{name}={raw!r} is not a number, falling back to {default}",
+            stacklevel=2,
+        )
+        return default
+
+
 def _picture_description_options_from_env() -> Optional["PictureDescriptionApiOptions"]:
     """Build API picture description options from the CCORE_DOCLING_VISION_* env
     vars, or return None to keep docling's inline default.
@@ -81,23 +112,28 @@ def _picture_description_options_from_env() -> Optional["PictureDescriptionApiOp
     if not url or PictureDescriptionApiOptions is None:
         return None
 
-    params = {
-        "max_completion_tokens": int(
-            os.getenv(VISION_MAX_TOKENS_ENV, "400")
-        ),
-    }
+    # The token limit field name differs across OpenAI-compatible servers:
+    # newer vLLM expects max_completion_tokens, older/other servers only
+    # accept max_tokens. `CCORE_DOCLING_VISION_TOKEN_PARAM` selects the name.
+    token_param = os.getenv(VISION_TOKEN_PARAM_ENV, "max_completion_tokens")
+    params = {token_param: _parse_int_env(VISION_MAX_TOKENS_ENV, _DEFAULT_VISION_MAX_TOKENS)}
     model = os.getenv(VISION_MODEL_ENV)
     if model:
         params["model"] = model
 
+    # Only send an Authorization header when a key is configured; keyless
+    # local servers may reject an empty bearer token.
+    headers = {}
+    api_key = os.getenv(VISION_API_KEY_ENV)
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     return PictureDescriptionApiOptions(
         url=url,
-        headers={
-            "Authorization": f"Bearer {os.getenv(VISION_API_KEY_ENV, '')}"
-        },
+        headers=headers,
         params=params,
         prompt=os.getenv(VISION_PROMPT_ENV, _DEFAULT_VISION_PROMPT),
-        timeout=float(os.getenv(VISION_TIMEOUT_ENV, str(_DOCLING_DEFAULT_TIMEOUT))),
+        timeout=_parse_float_env(VISION_TIMEOUT_ENV, _DOCLING_DEFAULT_TIMEOUT),
     )
 
 
